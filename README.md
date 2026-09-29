@@ -19,7 +19,7 @@ pi 的扩展是**路径数组**，不是 npm 包。所以只有两个文件要�
 
 ```bash
 mkdir -p ~/.pi/agent/local-ext/kev-think
-curl -fsSL https://raw.githubusercontent.com/DuanZGit/kev-think/main/index.ts \
+curl -fsSL https://raw.githubusercontent.com/DuanZGit/kev-think/master/index.ts \
   -o ~/.pi/agent/local-ext/kev-think/index.ts
 ```
 
