@@ -1,12 +1,17 @@
 /**
  * kev-think — 让 Kev-4B 接管「思考强度」的最小扩展
  *
- * 两件事，都只碰思考强度，不碰模型、不碰工具集、不碰其他设置：
+ * 两件事。第二件会真改思考强度，第一件只判不改（影子，见下）：
  *
- *  1) 每轮开口前问 Kev-4B 一个三档问题（这活要不要深想），按分数定档。
- *     - 置信度 ≥ 阈值：照它说的做（off / low / high，配合升降规则）
- *     - 置信度 < 阈值：往上升一档（它自己都没把握，不许往下调）
- *     - 超时 / 无 key / 任何异常：什么都不做，保持你当前的档位
+ *  1) 影子判档：每轮开口前问 Kev-4B 一个三档问题（这活要不要深想），
+ *     把分数/置信/判出的档写进日志和状态栏，但**不动你的档位**。
+ *     - 为什么不动：2026-09-29 实测，每轮按判档结果 setThinkingLevel 会让
+ *       档位在 low/medium/high 之间随机游走（近 8 会话 705 条消息里切了 53 次）。
+ *       pi 把 cache_control 挂在 system prompt 上，改档位本身不打中它，但历史回复里
+ *       assistant 的 thinking block 是按旧预算写的，下一轮换了预算就无法复用前缀缓存
+ *       —— 每切一次就把之前的输入全价重算一遍。抖动是无收益的，cache 是实打实的钱。
+ *     - 想真用它定档：把 KEV_THINK_APPLY=1 打开（默认关），行为回到 2026-09-29 之前。
+ *     - 低置信 / 超时 / 无 key / 任何异常：只记日志，什么都不做。
  *
  *  2) 轮内失败升档（规则来自 jev-pilot 的 escalate，纯规则、不花钱）：
  *     - 同一轮里**连续真失败 N 次**才触发（默认 2，防抖）
@@ -225,7 +230,7 @@ let on = true; // /kev off 会把这里置 false（会话内生效，不写配�
 function statusText(): string {
 	if (!on) return "kev:关";
 	if (!last) return "kev:开";
-	const tag = last.source === "escalate" ? "已抬" : "开";
+	const tag = last.source === "escalate" ? "已抬" : "影";
 	const bump = last.bumped ? "·低置信抬一档" : "";
 	return `kev:${tag}(${cn(last.level)}) ${last.score.toFixed(2)}/${last.confidence.toFixed(2)}${bump}`;
 }
@@ -270,6 +275,7 @@ export default function (pi: ExtensionAPI) {
 			const lines = [
 				`状态：${on ? "开（每轮由 Kev 判）" : "关（你手动控制）"}`,
 				`当前档位：${cur}（${cn(cur)}）`,
+				`判档生效：${envFlag("KEV_THINK_APPLY") === true ? "是（按判档结果改档位）" : "否（影子，只判不改）"}`,
 				`本轮提问：${calls} 次（上限 ${MAX_CALLS_PER_SESSION}）`,
 			];
 			if (last) {
@@ -347,20 +353,24 @@ export default function (pi: ExtensionAPI) {
 
 		let level = levelForScore(score);
 		const bumped = conf < CONFIDENCE_FLOOR;
-		if (bumped) level = escalate(level, "max") ?? level; // 低置信：往上走一档
+		if (bumped) level = escalate(level, "max") ?? level; // 低置信：影子判出来的档也抬一档
 
 		const before = pi.getThinkingLevel();
-		pi.setThinkingLevel(level);
+		// 影子模式：只判不设。KEV_THINK_APPLY=1 才回到「按判档结果改档位」。
+		const apply = envFlag("KEV_THINK_APPLY") === true;
+		if (apply) pi.setThinkingLevel(level);
 		last = { score, confidence: conf, level, bumped, from: before, source: "route", ts: new Date().toISOString() };
 		paint(ctx);
 		log({
 			kind: "route",
+			applied: apply, // false = 只判没设（影子）。看这行就知道档位有没有被动过
 			score: Math.round(score * 1000) / 1000,
 			confidence: Math.round(conf * 1000) / 1000,
 			level,
 			bumped,
 			from: before,
 			promptLen: prompt.length,
+			...(apply ? {} : { diff: before === level }), // 影子下记「判的和当前是否一致」
 		});
 	});
 
